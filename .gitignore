@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .venv/
 pets/
+!ark-codex-skill/assets/deskpet-app/pets/
+!ark-codex-skill/assets/deskpet-app/pets/**
 work/
 *.log
 *.pid

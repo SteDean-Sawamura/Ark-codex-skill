@@ -12,7 +12,37 @@
 - 自动跳过 PRTS 导出的坏文件（`Default` 经常是 110 字节空文件）
 - 将 WebM 抽帧为 1000×1000、20fps 的透明 PNG，自动计算包围盒并生成 `manifest.json`
 - 支持桌宠库：可以存放多个干员，右键“桌宠库”随时切换
+- 系统托盘：ChatGPT/Codex 运行时拉起托盘进程，提供“显示桌宠 / 隐藏桌宠 / 开机自启动 / 退出”，应用退出时托盘一起退出
+- 一键生成桌面和开始菜单的“打开桌宠 / 启动托盘”快捷方式
+- 项目模板初始自带予愿安洁莉娜，生成后可以直接启动
 - 生成的项目自带完整桌宠程序：状态字幕、拖动、锁定、迷你模式、全屏自动隐藏、按角色记忆位置/大小/倍速、随 ChatGPT/Codex 启动
+
+## 监听器说明
+
+`codex_pet_launcher.pyw` 是一个轻量常驻监听器，负责整个生命周期：
+
+- 检测到 ChatGPT / Codex 启动时，拉起桌宠和托盘进程
+- 检测到 ChatGPT / Codex 退出时，关闭桌宠和托盘进程
+- 托盘图标 `codex_tray.pyw` 只在 ChatGPT / Codex 运行期间存在
+
+如果监听器被手动退出（例如托盘里的“退出”），ChatGPT 再次启动时不会自动拉起桌宠。恢复方式：
+
+1. 下次登录 Windows 时注册表会自动启动监听器
+2. 或双击“启动托盘”快捷方式手动恢复
+
+托盘菜单说明：
+
+- `显示桌宠`：显示或重新拉起桌宠
+- `隐藏桌宠`：关闭桌宠（功能等同原来的“完全退出桌宠”），托盘保留，可再次用“显示桌宠”打开
+- `开机自启动`：勾选后登录 Windows 时自动启动监听器
+- `退出`：关闭桌宠、托盘和监听器本身
+
+## 快捷方式
+
+`create_shortcuts.py` 会在桌面和开始菜单创建两个快捷方式：
+
+- `打开桌宠.lnk`：直接启动桌宠
+- `启动托盘.lnk`：启动监听器（托盘），推荐在监听器退出后使用
 
 ## 目录结构
 
@@ -20,7 +50,7 @@
 ark-codex-skill/
 ├── README.md
 ├── .gitignore
-└── skill/
+└── ark-codex-skill/             # 可安装的 skill 本体
     ├── SKILL.md                 # Codex skill 主说明
     ├── agents/
     │   └── openai.yaml          # Codex UI 元数据
@@ -28,11 +58,13 @@ ark-codex-skill/
     │   ├── scaffold_deskpet.py  # 生成桌宠项目
     │   ├── setup_env.py         # 创建 .venv 并安装依赖
     │   ├── prts_export.py       # 从 PRTS 导出 WebM
-    │   └── process_webm.py      # WebM 转透明 PNG 帧
+    │   ├── process_webm.py      # WebM 转透明 PNG 帧
+    │   └── create_shortcuts.py  # 创建桌面/开始菜单快捷方式
     ├── references/
     │   └── prts-ui.md           # PRTS 查看器 DOM 参考
     └── assets/
         └── deskpet-app/         # 桌宠应用模板
+            └── pets/予愿安洁莉娜/  # 初始自带角色
 ```
 
 ## 环境要求
@@ -54,7 +86,13 @@ ark-codex-skill/
 安装 GitHub 仓库 AstrariaX/Ark-codex-skill 里的 ark-codex-skill skill
 ```
 
-也可以手动安装：把仓库里的 `skill/` 目录复制到 `~/.codex/skills/ark-codex-skill/`。
+也可以手动安装：把仓库里的 `ark-codex-skill/` 目录复制到 `~/.codex/skills/`。
+
+如果使用 Codex 的 skill 安装器，也可以这样安装：
+
+```text
+--repo AstrariaX/Ark-codex-skill --path ark-codex-skill
+```
 
 ### 第二步：调用
 
@@ -72,6 +110,8 @@ ark-codex-skill/
 
 不写皮肤就是默认原皮。制作完成后右键小人 -> 桌宠库，可以随时切换已入库的角色。
 
+注意：项目初始自带予愿安洁莉娜，可以直接双击 `启动桌宠.bat`；想加入其他角色时，再按上面的流程制作。
+
 ## 桌宠功能
 
 - 单击播放互动动画
@@ -88,7 +128,7 @@ ark-codex-skill/
 
 ### PRTS 导出失败或按钮找不到
 
-PRTS 页面改版会影响脚本。先看 `skill/references/prts-ui.md` 里的 DOM 说明，再同步更新 `skill/scripts/prts_export.py` 的选择器。
+PRTS 页面改版会影响脚本。先看 `ark-codex-skill/references/prts-ui.md` 里的 DOM 说明，再同步更新 `ark-codex-skill/scripts/prts_export.py` 的选择器。
 
 ### 打开后没有看到小人
 
@@ -102,7 +142,7 @@ PRTS 页面改版会影响脚本。先看 `skill/references/prts-ui.md` 里的 D
 2. 时装组选默认（或指定皮肤）
 3. 模型组选“基建”
 4. 动画依次选 `Default / Interact / Move / Relax / Sit / Sleep`
-5. 点击下载图标按钮导出 WebM，把文件放进 `my-deskpet/work/webm/`
+5. 点击下载图标按钮导出 WebM
 6. 把文件放进 `my-deskpet/work/webm/`，再让 Codex 用 skill 继续抽帧入库
 
 ## 注意事项
