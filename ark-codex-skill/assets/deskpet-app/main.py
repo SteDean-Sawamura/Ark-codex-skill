@@ -337,6 +337,7 @@ class FetchWorker(QThread):
         self.operator = operator
         self.skin = skin
         self.group = group or "基建"
+        self.pet_name = f"{operator}-{skin}" if skin else operator
 
     def run(self):
         export_script = os.path.join(SKILL_SCRIPTS, "prts_export.py")
@@ -344,9 +345,8 @@ class FetchWorker(QThread):
         if not os.path.isfile(export_script):
             self.finished.emit("skill 脚本未找到", False)
             return
-        name = self.operator
-        self.progress.emit(f"正在导出 {name} ({self.group}) ...")
-        cmd = [PYTHON_PATH, export_script, name, "--out", WEBM_DIR,
+        self.progress.emit(f"正在导出 {self.pet_name} ({self.group}) ...")
+        cmd = [PYTHON_PATH, export_script, self.operator, "--out", WEBM_DIR,
                "--group", self.group]
         if self.skin:
             cmd += ["--skin", self.skin]
@@ -356,11 +356,12 @@ class FetchWorker(QThread):
         except Exception as e:
             self.finished.emit(f"导出失败: {e}", False)
             return
-        self.progress.emit(f"正在转换 {name} 帧...")
-        pet_dir = os.path.join(PETS_DIR, name)
+        self.progress.emit(f"正在转换 {self.pet_name} 帧...")
+        filter_name = f"{self.operator}-{self.skin}" if self.skin else self.operator
+        pet_dir = os.path.join(PETS_DIR, self.pet_name)
         cmd2 = [
             PYTHON_PATH, process_script,
-            "--src", WEBM_DIR, "--name", name, "--out", pet_dir,
+            "--src", WEBM_DIR, "--name", filter_name, "--out", pet_dir,
             "--group", self.group,
         ]
         try:
@@ -369,7 +370,7 @@ class FetchWorker(QThread):
         except Exception as e:
             self.finished.emit(f"转换失败: {e}", False)
             return
-        self.finished.emit(f"{name} 已入库", True)
+        self.finished.emit(f"{self.pet_name} 已入库", True)
 
 
 class SettingsDialog(QDialog):
