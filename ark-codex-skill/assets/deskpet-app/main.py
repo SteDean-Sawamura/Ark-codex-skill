@@ -1105,7 +1105,7 @@ class PetWindow(QWidget):
         pet_menu.addAction(
             QAction("角色管理...", self, triggered=self._manage_pets_dialog)
         )
-        if len(self.available_groups) > 1:
+        if self.available_groups:
             group_menu = menu.addMenu("动画组")
             for g in self.available_groups:
                 action = QAction(g, self, checkable=True)
