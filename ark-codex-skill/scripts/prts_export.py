@@ -107,17 +107,37 @@ FORCE_VP8_JS = """
 def get_select_options(page, select):
     select.click()
     page.wait_for_timeout(500)
-    options = page.locator(".n-base-select-option")
-    texts = []
-    for i in range(options.count()):
-        opt = options.nth(i)
-        if opt.is_visible():
-            t = opt.inner_text().strip()
-            if t:
-                texts.append(t)
+    seen = {}
+    menus = page.locator(".n-base-select-menu")
+    vl = None
+    for i in range(menus.count()):
+        m = menus.nth(i)
+        if m.is_visible():
+            vl_loc = m.locator(".v-vl")
+            if vl_loc.count() > 0:
+                vl = vl_loc.first
+            break
+    for _ in range(80):
+        options = page.locator(".n-base-select-option")
+        for i in range(options.count()):
+            opt = options.nth(i)
+            if opt.is_visible():
+                t = opt.inner_text().strip()
+                if t and t not in seen:
+                    seen[t] = len(seen)
+        if vl:
+            at_bottom = vl.evaluate(
+                "el => el.scrollTop >= el.scrollHeight - el.clientHeight - 5"
+            )
+            if at_bottom and len(seen) > 0:
+                break
+            vl.evaluate("el => el.scrollTop += 150")
+        else:
+            break
+        page.wait_for_timeout(150)
     page.keyboard.press("Escape")
     page.wait_for_timeout(300)
-    return texts
+    return sorted(seen.keys(), key=lambda k: seen[k])
 
 
 def run_export(operator, skin, group, out_dir):

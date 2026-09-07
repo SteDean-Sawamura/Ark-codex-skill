@@ -145,6 +145,21 @@ DEFAULT_SETTINGS = {
 
 pet_windows = []
 
+WM_HOTKEY = 0x0312
+HOTKEY_TRANSPARENT = 1
+MOD_CTRL_SHIFT = 0x0002 | 0x0004  # CTRL + SHIFT
+VK_T = 0x54
+
+
+def _next_instance_key(pet_name):
+    existing = {pw.instance_key for pw in pet_windows}
+    if pet_name not in existing:
+        return pet_name
+    n = 2
+    while f"{pet_name}#{n}" in existing:
+        n += 1
+    return f"{pet_name}#{n}"
+
 
 def load_settings():
     data = dict(DEFAULT_SETTINGS)
@@ -578,7 +593,7 @@ class SettingsDialog(QDialog):
 
 
 class PetWindow(QWidget):
-    def __init__(self, pet_name, settings, sound_effects=None):
+    def __init__(self, pet_name, settings, sound_effects=None, instance_key=None):
         super().__init__()
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
@@ -589,6 +604,7 @@ class PetWindow(QWidget):
 
         self.settings = settings
         self.pet_name = pet_name
+        self.instance_key = instance_key or pet_name
         self.manifest = load_manifest(pet_name)
         self.fps = int(self.manifest["fps"])
         self.available_groups = list(self.manifest.get("groups", {}).keys())
@@ -597,7 +613,7 @@ class PetWindow(QWidget):
         self._rebuild_state_group_map()
 
         pet_states = self.settings.get("pet_states") or {}
-        pet_state = pet_states.get(self.pet_name, {})
+        pet_state = pet_states.get(self.instance_key, {})
         self.speed = float(
             pet_state.get("speed", self.settings.get("speed", 1.0))
         )
@@ -749,6 +765,9 @@ class PetWindow(QWidget):
         old_x, old_y = self.x(), self.y()
         old_w, old_h = self.width(), self.height()
         bx, by, bx2, by2 = info["bbox"]
+        y_off = info.get("y_offset", 0)
+        x_off = info.get("x_offset", 0)
+        by2 += y_off
         width = int((bx2 - bx + 1) * self.scale) + PAD * 2
         status_extra = STATUS_H if self.show_status else 0
         height = int((by2 - by + 1) * self.scale) + PAD * 2 + status_extra
@@ -756,7 +775,7 @@ class PetWindow(QWidget):
         bottom_center_x = old_x + old_w / 2
         bottom_y = old_y + old_h
         self.move(
-            int(bottom_center_x - width / 2),
+            int(bottom_center_x - width / 2 + x_off * self.scale),
             int(bottom_y - height),
         )
         self.plane.set_obj_size(width, height)
@@ -1093,6 +1112,9 @@ class PetWindow(QWidget):
         face_label = "面朝左 ←" if self.facing > 0 else "面朝右 →"
         menu.addAction(QAction(face_label, self, triggered=self._flip_facing))
         menu.addSeparator()
+        menu.addAction(QAction(f"再来一个 {self.pet_name}", self, triggered=self._spawn_clone))
+        if len(pet_windows) > 1:
+            menu.addAction(QAction("移除此宠物", self, triggered=self._remove_self))
         pet_menu = menu.addMenu("桌宠库")
         active_names = [pw.pet_name for pw in pet_windows]
         for name in list_pets():
@@ -1125,7 +1147,7 @@ class PetWindow(QWidget):
         full_action.setChecked(self.auto_hide_fullscreen)
         full_action.triggered.connect(self.toggle_fullscreen_auto_hide)
         menu.addAction(full_action)
-        trans_action = QAction("透明穿透", self, checkable=True)
+        trans_action = QAction("透明穿透 (Ctrl+Shift+T)", self, checkable=True)
         trans_action.setChecked(self.transparent_mode)
         trans_action.triggered.connect(lambda: _toggle_transparent_all())
         menu.addAction(trans_action)
@@ -1150,6 +1172,21 @@ class PetWindow(QWidget):
             QAction("完全退出", self, triggered=self.quit_pet)
         )
         menu.exec(event.globalPos())
+
+    def _spawn_clone(self):
+        key = _next_instance_key(self.pet_name)
+        pw = PetWindow(self.pet_name, self.settings, self.sound_fx, instance_key=key)
+        pet_windows.append(pw)
+        self._save_active_pets()
+
+    def _remove_self(self):
+        if len(pet_windows) <= 1:
+            return
+        pet_windows.remove(self)
+        self.save_pet_state()
+        self._save_active_pets()
+        QTimer.singleShot(0, self.close)
+        QTimer.singleShot(0, self.deleteLater)
 
     def _toggle_pet(self, name, checked):
         if checked:
@@ -1296,11 +1333,11 @@ class PetWindow(QWidget):
     def _action_settings_dialog(self):
         dlg = QDialog(self)
         dlg.setWindowTitle(f"动作设置 - {self.pet_name}")
-        dlg.setMinimumWidth(380)
+        dlg.setMinimumWidth(420)
         layout = QVBoxLayout(dlg)
         groups = self.manifest.get("groups", {})
         tabs = QTabWidget()
-        checkboxes = []
+        widgets = []
         state_labels = {
             "idle": "放松", "sit": "坐下", "sleep": "睡觉",
             "interact": "互动", "move": "散步",
@@ -1315,12 +1352,28 @@ class PetWindow(QWidget):
                 info = g_states[state_key]
                 label = state_labels.get(state_key, state_key)
                 is_loop = info.get("loop", state_key in LOOP_STATES)
-                cb = QCheckBox(f"{label}  —  循环播放")
+                y_off = info.get("y_offset", 0)
+                x_off = info.get("x_offset", 0)
+                row = QHBoxLayout()
+                cb = QCheckBox(f"{label}  —  循环")
                 cb.setChecked(is_loop)
-                cb.setProperty("group", g_name)
-                cb.setProperty("state", state_key)
-                checkboxes.append(cb)
-                vl.addWidget(cb)
+                row.addWidget(cb)
+                row.addStretch()
+                off_label = QLabel(f"X:{x_off} Y:{y_off}")
+                row.addWidget(off_label)
+                adj_btn = QPushButton("调整轴线")
+                adj_btn.setFixedWidth(70)
+                row.addWidget(adj_btn)
+                widgets.append({
+                    "group": g_name, "state": state_key,
+                    "cb": cb, "off_label": off_label,
+                    "y_offset": y_off, "x_offset": x_off,
+                })
+                idx = len(widgets) - 1
+                adj_btn.clicked.connect(
+                    lambda _, i=idx: self._ground_line_editor(widgets[i], dlg)
+                )
+                vl.addLayout(row)
             vl.addStretch()
             scroll.setWidget(container)
             tabs.addTab(scroll, g_name)
@@ -1331,17 +1384,139 @@ class PetWindow(QWidget):
         layout.addWidget(buttons)
         if dlg.exec() != QDialog.Accepted:
             return
-        for cb in checkboxes:
-            g = cb.property("group")
-            s = cb.property("state")
-            default = s in LOOP_STATES
-            if cb.isChecked() != default:
-                self.manifest["groups"][g][s]["loop"] = cb.isChecked()
+        for w in widgets:
+            g, s = w["group"], w["state"]
+            default_loop = s in LOOP_STATES
+            if w["cb"].isChecked() != default_loop:
+                self.manifest["groups"][g][s]["loop"] = w["cb"].isChecked()
             elif "loop" in self.manifest["groups"][g][s]:
                 del self.manifest["groups"][g][s]["loop"]
+            if w["y_offset"] != 0:
+                self.manifest["groups"][g][s]["y_offset"] = w["y_offset"]
+            elif "y_offset" in self.manifest["groups"][g][s]:
+                del self.manifest["groups"][g][s]["y_offset"]
+            if w["x_offset"] != 0:
+                self.manifest["groups"][g][s]["x_offset"] = w["x_offset"]
+            elif "x_offset" in self.manifest["groups"][g][s]:
+                del self.manifest["groups"][g][s]["x_offset"]
         manifest_path = os.path.join(PETS_DIR, self.pet_name, "manifest.json")
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(self.manifest, f, ensure_ascii=False, indent=2)
+
+    def _ground_line_editor(self, widget_info, parent):
+        g = widget_info["group"]
+        s = widget_info["state"]
+        info = self.manifest["groups"][g][s]
+        bx, by, bx2, by2 = info["bbox"]
+        frames_dir = os.path.join(PETS_DIR, self.pet_name, "frames", g, s)
+        frame_path = os.path.join(frames_dir, "frame_0000.png")
+        if not os.path.isfile(frame_path):
+            return
+        src_img = QImage(frame_path)
+        if src_img.isNull():
+            return
+        preview_h = 500
+        preview_w = 500
+        img_scale = min(preview_w / src_img.width(), preview_h / src_img.height())
+        bbox_center_x = (bx + bx2) / 2
+
+        class GroundLineWidget(QWidget):
+            def __init__(self, parent_widget=None):
+                super().__init__(parent_widget)
+                self.setFixedSize(preview_w, preview_h)
+                self.ground_y = by2 + widget_info["y_offset"]
+                self.center_x = bbox_center_x + widget_info["x_offset"]
+                self.dragging_h = False
+                self.dragging_v = False
+
+            def paintEvent(self, event):
+                p = QPainter(self)
+                p.fillRect(self.rect(), QColor(40, 40, 40))
+                p.setRenderHint(QPainter.SmoothPixmapTransform)
+                iw = src_img.width() * img_scale
+                ih = src_img.height() * img_scale
+                ix = (preview_w - iw) / 2
+                iy = (preview_h - ih) / 2
+                p.drawImage(QRectF(ix, iy, iw, ih), src_img)
+
+                gy = iy + self.ground_y * img_scale
+                p.setPen(QColor(255, 50, 50, 200))
+                p.drawLine(0, int(gy), preview_w, int(gy))
+                p.setPen(QColor(255, 255, 255))
+                p.drawText(5, int(gy) - 4, f"地面Y: {self.ground_y}")
+
+                ref_y = iy + by2 * img_scale
+                p.setPen(QColor(100, 200, 100, 120))
+                p.drawLine(0, int(ref_y), preview_w, int(ref_y))
+                p.drawText(5, int(ref_y) + 14, f"bbox底: {by2}")
+
+                cx = ix + self.center_x * img_scale
+                p.setPen(QColor(255, 50, 50, 200))
+                p.drawLine(int(cx), 0, int(cx), preview_h)
+                p.drawText(int(cx) + 3, 15, f"中轴X: {int(self.center_x)}")
+
+                ref_cx = ix + bbox_center_x * img_scale
+                p.setPen(QColor(100, 200, 100, 120))
+                p.drawLine(int(ref_cx), 0, int(ref_cx), preview_h)
+                p.drawText(int(ref_cx) + 3, 30, f"bbox中: {int(bbox_center_x)}")
+                p.end()
+
+            def mousePressEvent(self, event):
+                mx, my = event.position().x(), event.position().y()
+                iw = src_img.width() * img_scale
+                ih = src_img.height() * img_scale
+                ix = (preview_w - iw) / 2
+                iy = (preview_h - ih) / 2
+                gy = iy + self.ground_y * img_scale
+                cx = ix + self.center_x * img_scale
+                if abs(my - gy) < 10:
+                    self.dragging_h = True
+                elif abs(mx - cx) < 10:
+                    self.dragging_v = True
+                else:
+                    dist_h = abs(my - gy)
+                    dist_v = abs(mx - cx)
+                    if dist_h < dist_v:
+                        self.dragging_h = True
+                    else:
+                        self.dragging_v = True
+                self._update(mx, my)
+
+            def mouseMoveEvent(self, event):
+                if self.dragging_h or self.dragging_v:
+                    self._update(event.position().x(), event.position().y())
+
+            def mouseReleaseEvent(self, event):
+                self.dragging_h = False
+                self.dragging_v = False
+
+            def _update(self, mouse_x, mouse_y):
+                iw = src_img.width() * img_scale
+                ih = src_img.height() * img_scale
+                ix = (preview_w - iw) / 2
+                iy = (preview_h - ih) / 2
+                if self.dragging_h:
+                    raw = (mouse_y - iy) / img_scale
+                    self.ground_y = max(0, min(src_img.height() - 1, int(raw)))
+                if self.dragging_v:
+                    raw = (mouse_x - ix) / img_scale
+                    self.center_x = max(0, min(src_img.width() - 1, raw))
+                self.update()
+
+        dlg = QDialog(parent)
+        dlg.setWindowTitle(f"调整轴线 - {s}")
+        vl = QVBoxLayout(dlg)
+        vl.addWidget(QLabel("红色横线=地面，红色竖线=中轴（绿线=原始bbox参考）"))
+        gw = GroundLineWidget(dlg)
+        vl.addWidget(gw)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        vl.addWidget(btns)
+        if dlg.exec() == QDialog.Accepted:
+            widget_info["y_offset"] = gw.ground_y - by2
+            widget_info["x_offset"] = int(gw.center_x - bbox_center_x)
+            widget_info["off_label"].setText(f"X:{widget_info['x_offset']} Y:{widget_info['y_offset']}")
 
     def _manage_pets_dialog(self):
         dlg = QDialog(self)
@@ -1471,7 +1646,7 @@ class PetWindow(QWidget):
 
     def save_pet_state(self):
         pet_states = self.settings.setdefault("pet_states", {})
-        pet_states[self.pet_name] = {
+        pet_states[self.instance_key] = {
             "scale": self.scale,
             "speed": self.speed,
             "pos_x": self.x(),
@@ -1709,7 +1884,7 @@ def setup_tray(first_pet):
     tray_menu = QMenu()
     tray_menu.addAction("显示桌宠", lambda: _show_all())
     tray_menu.addAction("隐藏到托盘", lambda: _hide_all())
-    trans_action = QAction("透明穿透", checkable=True)
+    trans_action = QAction("透明穿透 (Ctrl+Shift+T)", checkable=True)
     trans_action.triggered.connect(lambda: _toggle_transparent_all())
     tray_menu.addAction(trans_action)
     tray_menu.addSeparator()
@@ -1737,6 +1912,30 @@ def _hide_all():
 def _toggle_transparent_all():
     for pw in pet_windows:
         pw.toggle_transparent()
+
+
+class HotkeyThread(QThread):
+    triggered = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self._thread_id = None
+
+    def run(self):
+        self._thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
+        user32 = ctypes.windll.user32
+        user32.RegisterHotKey(None, HOTKEY_TRANSPARENT, MOD_CTRL_SHIFT, VK_T)
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+            if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_TRANSPARENT:
+                self.triggered.emit()
+        user32.UnregisterHotKey(None, HOTKEY_TRANSPARENT)
+
+    def stop(self):
+        if self._thread_id:
+            ctypes.windll.user32.PostThreadMessageW(
+                self._thread_id, 0x0012, 0, 0  # WM_QUIT
+            )
 
 
 def _quit_all():
@@ -1781,11 +1980,19 @@ def main():
 
     tray = setup_tray(active[0])
 
+    hotkey_thread = HotkeyThread()
+    hotkey_thread.triggered.connect(_toggle_transparent_all)
+    hotkey_thread.start()
+
     for name in active:
-        pw = PetWindow(name, settings, sound_fx)
+        key = _next_instance_key(name)
+        pw = PetWindow(name, settings, sound_fx, instance_key=key)
         pet_windows.append(pw)
 
-    return app.exec()
+    result = app.exec()
+    hotkey_thread.stop()
+    hotkey_thread.wait(2000)
+    return result
 
 
 if __name__ == "__main__":

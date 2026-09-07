@@ -31,8 +31,6 @@ STATE_MAP = [
     ("Sleep", "sleep"),
 ]
 
-PASSTHROUGH_TOKENS = ["Attack", "Skill", "Die", "Start"]
-
 HTML = """<!doctype html>
 <html>
 <body style="margin:0">
@@ -151,20 +149,18 @@ def run(src, name, out, group=None):
         if os.path.getsize(full) < 1000:
             print("skip broken webm:", fname)
             continue
+        base = os.path.splitext(fname)[0]
+        parts = base.split("-")
+        anim = parts[-2] if len(parts) >= 3 else parts[-1]
+        anim_lower = anim.lower()
         matched = False
         for token, state in STATE_MAP:
-            if token.lower() in fname.lower():
+            if token.lower() == anim_lower:
                 state_files[state] = fname
                 matched = True
                 break
         if not matched:
-            base = os.path.splitext(fname)[0]
-            parts = base.split("-")
-            anim = parts[-2] if len(parts) >= 3 else parts[-1]
-            for pt in PASSTHROUGH_TOKENS:
-                if pt.lower() in anim.lower():
-                    state_files[anim.lower()] = fname
-                    break
+            state_files[anim_lower] = fname
     if not state_files:
         sys.exit("no valid WebM files found in " + src)
 
