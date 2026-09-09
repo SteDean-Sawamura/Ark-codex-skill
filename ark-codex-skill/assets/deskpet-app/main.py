@@ -13,7 +13,7 @@ import wave
 import winreg
 from ctypes import wintypes
 
-from PySide6.QtCore import QRectF, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -553,6 +553,10 @@ class SettingsDialog(QDialog):
         form.addRow("", self.mini_check)
         form.addRow("", self.fullscreen_check)
         form.addRow("", self.autostart_check)
+        self.doctor_name_edit = QLineEdit(settings.get("doctor_name", "博士"))
+        self.doctor_name_edit.setPlaceholderText("博士")
+        self.doctor_name_edit.setMaximumWidth(120)
+        form.addRow("博士名称", self.doctor_name_edit)
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -591,7 +595,100 @@ class SettingsDialog(QDialog):
             "sound_volume": self.volume_slider.value(),
             "behavior_do_peer_repulsion": self.repulsion_check.isChecked(),
             "display_multi_monitors": self.multi_mon_check.isChecked(),
+            "doctor_name": self.doctor_name_edit.text().strip() or "博士",
         }
+
+
+DEFAULT_LINES = [
+    "今天也要加油哦",
+    "……",
+    "有点困了",
+    "在看什么呢？",
+    "要休息一下吗",
+    "哼哼~",
+    "博士，工作辛苦了",
+    "别忘了喝水",
+]
+
+
+class BubbleWidget(QWidget):
+    def __init__(self, parent_pet):
+        super().__init__(None)
+        self.setWindowFlags(
+            Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self._pet = parent_pet
+        self._text = ""
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self.hide)
+        self._font = QFont("Microsoft YaHei", 9)
+
+    def show_text(self, text, duration_ms=3500):
+        self._text = text
+        fm = QFontMetrics(self._font)
+        tw = fm.horizontalAdvance(text) + 24
+        self.setFixedSize(max(tw, 60), 40)
+        self._reposition()
+        self.show()
+        self.update()
+        self._hide_timer.start(duration_ms)
+
+    def _reposition(self):
+        pet = self._pet
+        cx = pet.x() + pet.width() // 2
+        self.move(cx - self.width() // 2, pet.y() - self.height() - 2)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        tri_h = 6
+        body = QRectF(0, 0, w, h - tri_h)
+        p.setBrush(QColor(30, 30, 30, 210))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(body, 8, 8)
+        tri = [
+            QPointF(w / 2 - 5, h - tri_h),
+            QPointF(w / 2 + 5, h - tri_h),
+            QPointF(w / 2, h),
+        ]
+        p.drawPolygon(tri)
+        p.setPen(QColor(255, 255, 255))
+        p.setFont(self._font)
+        p.drawText(body, Qt.AlignCenter, self._text)
+        p.end()
+
+
+def fetch_prts_lines(operator_name):
+    import re, urllib.request, urllib.parse
+    candidates = [operator_name]
+    if "-" in operator_name:
+        candidates.append(operator_name.split("-")[0])
+    for name in candidates:
+        page = urllib.parse.quote(f"{name}/语音记录")
+        url = f"https://prts.wiki/api.php?action=parse&page={page}&prop=wikitext&format=json"
+        try:
+            resp = urllib.request.urlopen(url, timeout=10)
+            data = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            continue
+        text = data.get("parse", {}).get("wikitext", {}).get("*", "")
+        if not text or "VoiceData" not in text:
+            continue
+        raw = re.findall(r"VoiceData/word\|中文\|(.*?)\}\}", text)
+        results = []
+        for line in raw:
+            clean = re.sub(r"\{\{DrName[^}]*\}\}", "{博士}", line)
+            clean = re.sub(r"\{\{DrName[^}]*$", "{博士}", clean)
+            clean = clean.strip()
+            if clean:
+                results.append(clean)
+        if results:
+            return results
+    return []
 
 
 class PetWindow(QWidget):
@@ -707,6 +804,14 @@ class PetWindow(QWidget):
         self.fullscreen_timer.timeout.connect(self.check_fullscreen)
         self.fullscreen_timer.start()
 
+        self.bubble = BubbleWidget(self)
+        lines_path = os.path.join(PETS_DIR, self.pet_name, "lines.txt")
+        try:
+            with open(lines_path, encoding="utf-8") as f:
+                self._lines = [l.strip() for l in f if l.strip()]
+        except OSError:
+            self._lines = list(DEFAULT_LINES)
+
         self.set_state("idle")
         pos_x = pet_state.get("pos_x")
         if pos_x is None:
@@ -754,6 +859,8 @@ class PetWindow(QWidget):
         wx = int(self.plane.x)
         wy = int(screen_bottom - self.plane.y - self.height())
         self.move(wx, wy)
+        if self.bubble.isVisible():
+            self.bubble._reposition()
 
     def tick_ms(self):
         return max(10, int(round(1000 / self.fps / self.speed)))
@@ -829,6 +936,8 @@ class PetWindow(QWidget):
             self.mobility = 0
         self._sync_plane_from_widget()
         self._schedule_behavior()
+        if anim_name in ("idle", "sit") and self._lines and random.random() < 0.2:
+            self._show_random_line()
 
     def _should_show_outline(self):
         mode = self.settings.get("render_outline", "dragging")
@@ -952,9 +1061,18 @@ class PetWindow(QWidget):
             return cached
         image = QImage(self.frame_path(self.frame_index))
         if not image.isNull():
+            w = int(image.width() * self.scale)
+            h = int(image.height() * self.scale)
+            scaled = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+            scaled.fill(Qt.transparent)
+            p = QPainter(scaled)
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+            p.drawImage(QRectF(0, 0, w, h), image)
+            p.end()
             if len(self.cache) > 5:
                 self.cache.clear()
-            self.cache[self.frame_index] = image
+            self.cache[self.frame_index] = scaled
+            return scaled
         return image
 
     def next_frame(self):
@@ -979,28 +1097,19 @@ class PetWindow(QWidget):
         bx, by, _, _ = info["bbox"]
         image = self.current_image()
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
         status_extra = STATUS_H if self.show_status else 0
         if not image.isNull():
             draw_img = image
             if self.facing < 0:
                 draw_img = image.mirrored(True, False)
-            target = QRectF(
-                PAD - bx * self.scale,
-                status_extra + PAD - by * self.scale,
-                draw_img.width() * self.scale,
-                draw_img.height() * self.scale,
-            )
+            dx = int(PAD - bx * self.scale)
+            dy = int(status_extra + PAD - by * self.scale)
             if self._should_show_outline():
                 outline_img = self._get_outline_image(draw_img)
-                ow = self.outline_width * self.scale
-                for dx, dy in [(-ow, 0), (ow, 0), (0, -ow), (0, ow)]:
-                    painter.drawImage(
-                        QRectF(target.x() + dx, target.y() + dy,
-                               target.width(), target.height()),
-                        outline_img,
-                    )
-            painter.drawImage(target, draw_img)
+                ow = int(self.outline_width * self.scale)
+                for ox, oy in [(-ow, 0), (ow, 0), (0, -ow), (0, ow)]:
+                    painter.drawImage(dx + ox, dy + oy, outline_img)
+            painter.drawImage(dx, dy, draw_img)
 
         if self.show_status:
             bar_width = max(
@@ -1089,6 +1198,8 @@ class PetWindow(QWidget):
             self.behavior_state = State.INTERACT
             self._schedule_behavior()
             self._play_sound("click")
+            if self._lines:
+                self._show_random_line()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -1152,6 +1263,7 @@ class PetWindow(QWidget):
                 )
                 group_menu.addAction(action)
         menu.addAction(QAction("动作设置...", self, triggered=self._action_settings_dialog))
+        menu.addAction(QAction("获取PRTS台词", self, triggered=self._fetch_prts_lines))
         menu.addSeparator()
         mini_action = QAction("迷你模式（隐藏字幕）", self, checkable=True)
         mini_action.setChecked(not self.show_status)
@@ -1253,6 +1365,8 @@ class PetWindow(QWidget):
 
     def set_scale(self, value):
         self.scale = max(MIN_SCALE, min(MAX_SCALE, round(value, 1)))
+        self.cache.clear()
+        self._outline_cache.clear()
         self.apply_geometry()
         self.settings["scale"] = self.scale
         self.save_pet_state()
@@ -1266,7 +1380,15 @@ class PetWindow(QWidget):
                 self._state_group_map.setdefault(state, [])
                 if g not in self._state_group_map[state]:
                     self._state_group_map[state].append(g)
-        self._extra_anims = [s for s in self._state_group_map if s not in STANDARD_ANIMS]
+        self._extra_anims = []
+        for s in self._state_group_map:
+            if s in STANDARD_ANIMS:
+                continue
+            for g in self._state_group_map[s]:
+                info = groups.get(g, {}).get(s, {})
+                if info.get("auto_play", True):
+                    self._extra_anims.append(s)
+                    break
         self._current_state_group = {}
 
     def _pick_group_for_state(self, state):
@@ -1347,7 +1469,36 @@ class PetWindow(QWidget):
                 item.setText(f"{name}  [{', '.join(groups)}]")
             pl.addItem(item)
 
+    def _show_random_line(self):
+        if not self._lines:
+            return
+        line = random.choice(self._lines)
+        dr_name = self.settings.get("doctor_name", "博士")
+        line = line.replace("{博士}", dr_name)
+        self.bubble.show_text(line)
+
+    def _fetch_prts_lines(self):
+        lines_path = os.path.join(PETS_DIR, self.pet_name, "lines.txt")
+        if os.path.isfile(lines_path):
+            r = QMessageBox.question(
+                self, "获取PRTS台词",
+                f"已存在 lines.txt（{len(self._lines)} 条），是否覆盖？",
+            )
+            if r != QMessageBox.Yes:
+                return
+        lines = fetch_prts_lines(self.pet_name)
+        if not lines:
+            self.bubble.show_text("获取失败或无台词", 2000)
+            return
+        with open(lines_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        self._lines = lines
+        self.bubble.show_text(f"已获取 {len(lines)} 条台词", 2500)
+
     def _action_settings_dialog(self):
+        orig_state = self.state
+        orig_group = self._current_state_group.get(self.state)
+        orig_hold = self.hold_state
         dlg = QDialog(self)
         dlg.setWindowTitle(f"动作设置 - {self.pet_name}")
         dlg.setMinimumWidth(420)
@@ -1359,6 +1510,10 @@ class PetWindow(QWidget):
             "idle": "放松", "sit": "坐下", "sleep": "睡觉",
             "interact": "互动", "move": "散步",
         }
+
+        def preview(g, s):
+            self.set_state(s, hold=True, group=g)
+
         for g_name in self.available_groups:
             g_states = groups.get(g_name, {})
             scroll = QScrollArea()
@@ -1369,12 +1524,26 @@ class PetWindow(QWidget):
                 info = g_states[state_key]
                 label = state_labels.get(state_key, state_key)
                 is_loop = info.get("loop", state_key in LOOP_STATES)
+                is_extra = state_key not in STANDARD_ANIMS
+                auto_play = info.get("auto_play", True) if is_extra else None
                 y_off = info.get("y_offset", 0)
                 x_off = info.get("x_offset", 0)
                 row = QHBoxLayout()
+                prev_btn = QPushButton("预览")
+                prev_btn.setFixedWidth(40)
+                prev_btn.clicked.connect(
+                    lambda _, g=g_name, s=state_key: preview(g, s)
+                )
+                row.addWidget(prev_btn)
                 cb = QCheckBox(f"{label}  —  循环")
                 cb.setChecked(is_loop)
                 row.addWidget(cb)
+                ap_cb = None
+                if is_extra:
+                    ap_cb = QCheckBox("待机")
+                    ap_cb.setChecked(auto_play)
+                    ap_cb.setToolTip("加入待机动作队列")
+                    row.addWidget(ap_cb)
                 row.addStretch()
                 off_label = QLabel(f"X:{x_off} Y:{y_off}")
                 row.addWidget(off_label)
@@ -1383,7 +1552,7 @@ class PetWindow(QWidget):
                 row.addWidget(adj_btn)
                 widgets.append({
                     "group": g_name, "state": state_key,
-                    "cb": cb, "off_label": off_label,
+                    "cb": cb, "ap_cb": ap_cb, "off_label": off_label,
                     "y_offset": y_off, "x_offset": x_off,
                 })
                 idx = len(widgets) - 1
@@ -1399,7 +1568,9 @@ class PetWindow(QWidget):
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         layout.addWidget(buttons)
-        if dlg.exec() != QDialog.Accepted:
+        accepted = dlg.exec() == QDialog.Accepted
+        self.set_state(orig_state, hold=orig_hold, group=orig_group)
+        if not accepted:
             return
         for w in widgets:
             g, s = w["group"], w["state"]
@@ -1408,6 +1579,11 @@ class PetWindow(QWidget):
                 self.manifest["groups"][g][s]["loop"] = w["cb"].isChecked()
             elif "loop" in self.manifest["groups"][g][s]:
                 del self.manifest["groups"][g][s]["loop"]
+            if w["ap_cb"] is not None:
+                if not w["ap_cb"].isChecked():
+                    self.manifest["groups"][g][s]["auto_play"] = False
+                elif "auto_play" in self.manifest["groups"][g][s]:
+                    del self.manifest["groups"][g][s]["auto_play"]
             if w["y_offset"] != 0:
                 self.manifest["groups"][g][s]["y_offset"] = w["y_offset"]
             elif "y_offset" in self.manifest["groups"][g][s]:
@@ -1419,6 +1595,8 @@ class PetWindow(QWidget):
         manifest_path = os.path.join(PETS_DIR, self.pet_name, "manifest.json")
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(self.manifest, f, ensure_ascii=False, indent=2)
+        self._rebuild_state_group_map()
+        self._reconfigure_matrix()
 
     def _ground_line_editor(self, widget_info, parent):
         g = widget_info["group"]
@@ -1566,13 +1744,23 @@ class PetWindow(QWidget):
         form = QFormLayout()
         name_edit = QLineEdit()
         name_edit.setPlaceholderText("干员名（可选：干员名 皮肤 皮肤名）")
-        group_combo = QComboBox()
-        group_combo.addItems(["基建", "正面", "背面"])
         form.addRow("干员名:", name_edit)
-        form.addRow("模型组:", group_combo)
+        group_checks = {}
+        gc_layout = QHBoxLayout()
+        for gn in ["基建", "正面", "背面"]:
+            cb = QCheckBox(gn)
+            if gn == "基建":
+                cb.setChecked(True)
+            group_checks[gn] = cb
+            gc_layout.addWidget(cb)
+        form.addRow("模型组:", gc_layout)
         al.addLayout(form)
-        dl_btn = QPushButton("下载")
-        al.addWidget(dl_btn)
+        btn_row = QHBoxLayout()
+        dl_btn = QPushButton("下载动画")
+        lines_btn = QPushButton("获取PRTS台词")
+        btn_row.addWidget(dl_btn)
+        btn_row.addWidget(lines_btn)
+        al.addLayout(btn_row)
         layout.addWidget(grp_add)
 
         def on_pet_selected():
@@ -1586,12 +1774,12 @@ class PetWindow(QWidget):
         self._manage_dlg = dlg
         self._manage_pet_list = pet_list
         self._manage_name_edit = name_edit
-        self._manage_group_combo = group_combo
+        self._manage_group_checks = group_checks
 
         def on_download():
             text = name_edit.text().strip()
-            group = group_combo.currentText()
-            if not text:
+            selected_groups = [g for g, cb in group_checks.items() if cb.isChecked()]
+            if not text or not selected_groups:
                 return
             parts = text.split("皮肤")
             operator = parts[0].strip()
@@ -1601,20 +1789,65 @@ class PetWindow(QWidget):
             if self.fetch_worker and self.fetch_worker.isRunning():
                 QMessageBox.information(dlg, "下载", "正在拉取中，请稍候...")
                 return
-            self.fetch_progress = QProgressDialog(
-                f"正在准备 {operator} ({group}) ...", "取消", 0, 3, dlg
+            self._pending_groups = list(selected_groups)
+            self._pending_operator = operator
+            self._pending_skin = skin
+            _start_next_group(self)
+
+        def _start_next_group(pet_win):
+            if not pet_win._pending_groups:
+                return
+            group = pet_win._pending_groups.pop(0)
+            op = pet_win._pending_operator
+            skin = pet_win._pending_skin
+            pet_win.fetch_progress = QProgressDialog(
+                f"正在准备 {op} ({group}) ...", "取消", 0, 3, dlg
             )
-            self.fetch_progress.setWindowTitle("下载动画")
-            self.fetch_progress.setMinimumWidth(320)
-            self.fetch_progress.setMinimumDuration(0)
-            self.fetch_progress.setValue(0)
-            self.fetch_progress.canceled.connect(self._cancel_fetch)
-            self.fetch_worker = FetchWorker(operator, skin, group)
-            self.fetch_worker.progress.connect(self._on_fetch_progress)
-            self.fetch_worker.finished.connect(self._on_fetch_finished)
-            self.fetch_worker.start()
+            pet_win.fetch_progress.setWindowTitle("下载动画")
+            pet_win.fetch_progress.setMinimumWidth(320)
+            pet_win.fetch_progress.setMinimumDuration(0)
+            pet_win.fetch_progress.setValue(0)
+            pet_win.fetch_progress.canceled.connect(pet_win._cancel_fetch)
+            pet_win.fetch_worker = FetchWorker(op, skin, group)
+            pet_win.fetch_worker.progress.connect(pet_win._on_fetch_progress)
+            pet_win.fetch_worker.finished.connect(
+                lambda msg, ok: _on_group_done(pet_win, msg, ok)
+            )
+            pet_win.fetch_worker.start()
+
+        def _on_group_done(pet_win, msg, success):
+            pet_win._on_fetch_finished(msg, success)
+            if success and pet_win._pending_groups:
+                _start_next_group(pet_win)
+
+        def on_fetch_lines():
+            text = name_edit.text().strip()
+            if not text:
+                return
+            operator = text.split("皮肤")[0].strip()
+            if not operator:
+                return
+            lines_path = os.path.join(PETS_DIR, operator, "lines.txt")
+            if os.path.isfile(lines_path):
+                r = QMessageBox.question(
+                    dlg, "获取PRTS台词",
+                    f"{operator} 已有台词文件，是否覆盖？",
+                )
+                if r != QMessageBox.Yes:
+                    return
+            lines = fetch_prts_lines(operator)
+            if not lines:
+                QMessageBox.warning(dlg, "获取台词", "获取失败或无台词")
+                return
+            os.makedirs(os.path.join(PETS_DIR, operator), exist_ok=True)
+            with open(lines_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            if operator == self.pet_name:
+                self._lines = lines
+            QMessageBox.information(dlg, "获取台词", f"已获取 {len(lines)} 条台词")
 
         dl_btn.clicked.connect(on_download)
+        lines_btn.clicked.connect(on_fetch_lines)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(dlg.reject)

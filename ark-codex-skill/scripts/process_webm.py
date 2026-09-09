@@ -56,7 +56,8 @@ async function capture(src) {
   function step(now, meta) {
     ctx.clearRect(0, 0, SIZE, SIZE);
     ctx.drawImage(v, 0, 0, SIZE, SIZE);
-    const data = ctx.getImageData(0, 0, SIZE, SIZE).data;
+    const imgData = ctx.getImageData(0, 0, SIZE, SIZE);
+    const data = imgData.data;
     for (let y = 0; y < SIZE; y += 2) {
       for (let x = 0; x < SIZE; x += 2) {
         const a = data[(y * SIZE + x) * 4 + 3];
@@ -68,6 +69,10 @@ async function capture(src) {
         }
       }
     }
+    for (let i = 3; i < data.length; i += 4) {
+      if (data[i] < 15) data[i] = 0;
+    }
+    ctx.putImageData(imgData, 0, 0);
     frames.push({ t: meta.mediaTime, url: c.toDataURL('image/png') });
     if (!v.ended) v.requestVideoFrameCallback(step);
   }
@@ -165,7 +170,10 @@ def run(src, name, out, group=None):
         sys.exit("no valid WebM files found in " + src)
 
     for fname in state_files.values():
-        shutil.copy2(os.path.join(src, fname), os.path.join(webm_dir, fname))
+        src_path = os.path.join(src, fname)
+        dst_path = os.path.join(webm_dir, fname)
+        if os.path.abspath(src_path) != os.path.abspath(dst_path):
+            shutil.copy2(src_path, dst_path)
 
     manifest_path = os.path.join(pet_dir, "manifest.json")
     if os.path.isfile(manifest_path):
