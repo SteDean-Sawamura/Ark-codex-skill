@@ -3,6 +3,7 @@ import ctypes
 import json
 import math
 import os
+import random
 import shutil
 import struct
 import subprocess
@@ -51,6 +52,7 @@ from PySide6.QtWidgets import (
 )
 
 LOOP_STATES = {"idle", "move", "sit", "sleep"}
+STANDARD_ANIMS = {"idle", "sit", "sleep", "move", "interact"}
 import codex_monitor
 from behavior import MIN_DURATION, STATE_TO_ANIM, State, StochasticMatrix
 from physics import Plane
@@ -631,6 +633,8 @@ class PetWindow(QWidget):
         self.locked = bool(self.settings.get("locked", True))
 
         self.state = "idle"
+        self._applied_ref_x = self.manifest.get("size", 1000) / 2
+        self._applied_bx = self.state_info("idle")["bbox"][0]
         self.frame_index = 0
         self.scale = max(
             MIN_SCALE,
@@ -768,17 +772,21 @@ class PetWindow(QWidget):
         y_off = info.get("y_offset", 0)
         x_off = info.get("x_offset", 0)
         by2 += y_off
+        canvas_cx = self.manifest.get("size", 1000) / 2
+        ref_x = canvas_cx + x_off
         width = int((bx2 - bx + 1) * self.scale) + PAD * 2
         status_extra = STATUS_H if self.show_status else 0
         height = int((by2 - by + 1) * self.scale) + PAD * 2 + status_extra
         self.resize(width, height)
-        bottom_center_x = old_x + old_w / 2
+        anchor_x = old_x + PAD + (self._applied_ref_x - self._applied_bx) * self.scale
         bottom_y = old_y + old_h
-        self.move(
-            int(bottom_center_x - width / 2 + x_off * self.scale),
-            int(bottom_y - height),
-        )
+        new_x = int(anchor_x - PAD - (ref_x - bx) * self.scale)
+        new_y = int(bottom_y - height)
+        self.move(new_x, new_y)
+        self._applied_ref_x = ref_x
+        self._applied_bx = bx
         self.plane.set_obj_size(width, height)
+        self._sync_plane_from_widget()
 
     def set_state(self, name, hold=False, group=None):
         if name not in self._state_group_map:
@@ -808,7 +816,13 @@ class PetWindow(QWidget):
         self.behavior_state = new_state
         anim_name, mob = STATE_TO_ANIM[new_state]
         self.mobility = mob
-        if anim_name in self._state_group_map:
+        if anim_name == "interact" and self._extra_anims:
+            pool = list(self._extra_anims)
+            if "interact" in self._state_group_map:
+                pool.append("interact")
+            chosen = random.choice(pool)
+            self.set_state(chosen)
+        elif anim_name in self._state_group_map:
             self.set_state(anim_name)
         else:
             self.set_state("idle")
@@ -1252,13 +1266,13 @@ class PetWindow(QWidget):
                 self._state_group_map.setdefault(state, [])
                 if g not in self._state_group_map[state]:
                     self._state_group_map[state].append(g)
+        self._extra_anims = [s for s in self._state_group_map if s not in STANDARD_ANIMS]
         self._current_state_group = {}
 
     def _pick_group_for_state(self, state):
         candidates = self._state_group_map.get(state, self.active_groups[:1])
         if len(candidates) == 1:
             return candidates[0]
-        import random
         return random.choice(candidates)
 
     def _frames_dir_for_state(self, state):
@@ -1280,6 +1294,9 @@ class PetWindow(QWidget):
             available,
             self.settings.get("behavior_ai_activation", 4),
         )
+        if self._extra_anims:
+            for row in self.matrix.weights:
+                row[State.INTERACT] = round(row[State.INTERACT] * 5)
 
     def toggle_group(self, group_name):
         if group_name in self.active_groups:
