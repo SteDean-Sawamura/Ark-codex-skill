@@ -1,5 +1,4 @@
 import atexit
-import ctypes
 import json
 import math
 import os
@@ -10,8 +9,14 @@ import subprocess
 import sys
 import time
 import wave
-import winreg
-from ctypes import wintypes
+
+IS_WINDOWS = sys.platform == 'win32'
+IS_MACOS = sys.platform == 'darwin'
+
+if IS_WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+    import winreg
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import (
@@ -69,8 +74,12 @@ DISABLED_FLAG = os.path.join(BASE_DIR, "pet_disabled.flag")
 SHOW_FLAG = os.path.join(BASE_DIR, "pet_show.flag")
 HIDE_FLAG = os.path.join(BASE_DIR, "pet_hide.flag")
 WATCHER_PATH = os.path.join(BASE_DIR, "codex_pet_launcher.pyw")
-PYW_PATH = os.path.join(BASE_DIR, ".venv", "Scripts", "pythonw.exe")
-PYTHON_PATH = os.path.join(BASE_DIR, ".venv", "Scripts", "python.exe")
+if IS_MACOS:
+    PYW_PATH = os.path.join(BASE_DIR, ".venv", "bin", "python")
+    PYTHON_PATH = PYW_PATH
+else:
+    PYW_PATH = os.path.join(BASE_DIR, ".venv", "Scripts", "pythonw.exe")
+    PYTHON_PATH = os.path.join(BASE_DIR, ".venv", "Scripts", "python.exe")
 SKILL_SCRIPTS = os.path.join(
     os.path.expanduser("~"), ".claude", "skills", "ark-codex-skill", "scripts"
 )
@@ -147,10 +156,11 @@ DEFAULT_SETTINGS = {
 
 pet_windows = []
 
-WM_HOTKEY = 0x0312
-HOTKEY_TRANSPARENT = 1
-MOD_CTRL_SHIFT = 0x0002 | 0x0004  # CTRL + SHIFT
-VK_T = 0x54
+if IS_WINDOWS:
+    WM_HOTKEY = 0x0312
+    HOTKEY_TRANSPARENT = 1
+    MOD_CTRL_SHIFT = 0x0002 | 0x0004  # CTRL + SHIFT
+    VK_T = 0x54
 
 
 def _next_instance_key(pet_name):
@@ -282,53 +292,75 @@ def ensure_sounds():
     return drop_path, click_path
 
 
-RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RUN_VALUE_NAME = "ClaudeCodeDeskpetWatcher"
+if IS_WINDOWS:
+    RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    RUN_VALUE_NAME = "ClaudeCodeDeskpetWatcher"
 
-
-def legacy_startup_entry_path():
-    appdata = os.environ.get("APPDATA", "")
-    return os.path.join(
-        appdata,
-        "Microsoft",
-        "Windows",
-        "Start Menu",
-        "Programs",
-        "Startup",
-        "CodexDeskpetAutoStart.vbs",
-    )
-
-
-def set_autostart(enabled):
-    legacy = legacy_startup_entry_path()
-    try:
-        if os.path.exists(legacy):
-            os.remove(legacy)
-    except OSError:
-        pass
-    try:
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            RUN_KEY_PATH,
-            0,
-            winreg.KEY_SET_VALUE,
+    def legacy_startup_entry_path():
+        appdata = os.environ.get("APPDATA", "")
+        return os.path.join(
+            appdata,
+            "Microsoft",
+            "Windows",
+            "Start Menu",
+            "Programs",
+            "Startup",
+            "CodexDeskpetAutoStart.vbs",
         )
+
+    def set_autostart(enabled):
+        legacy = legacy_startup_entry_path()
         try:
-            if enabled:
-                command = f'"{PYW_PATH}" "{WATCHER_PATH}"'
-                winreg.SetValueEx(
-                    key, RUN_VALUE_NAME, 0, winreg.REG_SZ, command
-                )
-            else:
-                try:
-                    winreg.DeleteValue(key, RUN_VALUE_NAME)
-                except FileNotFoundError:
-                    pass
-        finally:
-            winreg.CloseKey(key)
-    except OSError:
+            if os.path.exists(legacy):
+                os.remove(legacy)
+        except OSError:
+            pass
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                RUN_KEY_PATH,
+                0,
+                winreg.KEY_SET_VALUE,
+            )
+            try:
+                if enabled:
+                    command = f'"{PYW_PATH}" "{WATCHER_PATH}"'
+                    winreg.SetValueEx(
+                        key, RUN_VALUE_NAME, 0, winreg.REG_SZ, command
+                    )
+                else:
+                    try:
+                        winreg.DeleteValue(key, RUN_VALUE_NAME)
+                    except FileNotFoundError:
+                        pass
+            finally:
+                winreg.CloseKey(key)
+        except OSError:
+            return False
+        return True
+elif IS_MACOS:
+    def set_autostart(enabled):
+        import plistlib
+        plist_dir = os.path.expanduser("~/Library/LaunchAgents")
+        plist_path = os.path.join(plist_dir, "com.deskpet.ark.plist")
+        if enabled:
+            os.makedirs(plist_dir, exist_ok=True)
+            plist = {
+                'Label': 'com.deskpet.ark',
+                'ProgramArguments': [PYW_PATH, os.path.join(BASE_DIR, 'main.py')],
+                'RunAtLoad': True,
+            }
+            with open(plist_path, 'wb') as f:
+                plistlib.dump(plist, f)
+        else:
+            try:
+                os.remove(plist_path)
+            except OSError:
+                pass
+        return True
+else:
+    def set_autostart(enabled):
         return False
-    return True
 
 
 def remove_pid_file():
@@ -369,7 +401,7 @@ class FetchWorker(QThread):
             cmd += ["--skin", self.skin]
         try:
             subprocess.run(cmd, check=True, capture_output=True, timeout=300,
-                           creationflags=subprocess.CREATE_NO_WINDOW)
+                           creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0)
         except Exception as e:
             self.finished.emit(f"导出失败: {e}", False)
             return
@@ -383,7 +415,7 @@ class FetchWorker(QThread):
         ]
         try:
             subprocess.run(cmd2, check=True, capture_output=True, timeout=300,
-                           creationflags=subprocess.CREATE_NO_WINDOW)
+                           creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0)
         except Exception as e:
             self.finished.emit(f"转换失败: {e}", False)
             return
@@ -694,9 +726,12 @@ def fetch_prts_lines(operator_name):
 class PetWindow(QWidget):
     def __init__(self, pet_name, settings, sound_effects=None, instance_key=None):
         super().__init__()
-        self.setWindowFlags(
-            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
-        )
+        wflags = Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        if IS_WINDOWS:
+            wflags |= Qt.Tool
+        else:
+            wflags |= Qt.Window
+        self.setWindowFlags(wflags)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_NoSystemBackground)
         self.setMouseTracking(True)
@@ -968,16 +1003,21 @@ class PetWindow(QWidget):
 
     def toggle_transparent(self):
         self.transparent_mode = not self.transparent_mode
-        hwnd = int(self.winId())
-        user32 = ctypes.windll.user32
-        GWL_EXSTYLE = -20
-        WS_EX_TRANSPARENT = 0x00000020
-        ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        if IS_WINDOWS:
+            hwnd = int(self.winId())
+            user32 = ctypes.windll.user32
+            GWL_EXSTYLE = -20
+            WS_EX_TRANSPARENT = 0x00000020
+            ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if self.transparent_mode:
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_TRANSPARENT)
+            else:
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style & ~WS_EX_TRANSPARENT)
+        else:
+            self.setAttribute(Qt.WA_TransparentForMouseEvents, self.transparent_mode)
         if self.transparent_mode:
-            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_TRANSPARENT)
             self.setWindowOpacity(float(self.settings.get("opacity_dim", 0.75)))
         else:
-            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style & ~WS_EX_TRANSPARENT)
             self.setWindowOpacity(1.0)
 
     def _play_sound(self, name):
@@ -1604,15 +1644,21 @@ class PetWindow(QWidget):
         info = self.manifest["groups"][g][s]
         bx, by, bx2, by2 = info["bbox"]
         frames_dir = os.path.join(PETS_DIR, self.pet_name, "frames", g, s)
-        frame_path = os.path.join(frames_dir, "frame_0000.png")
-        if not os.path.isfile(frame_path):
+        frame_files = sorted(
+            f for f in os.listdir(frames_dir) if f.endswith(".png")
+        ) if os.path.isdir(frames_dir) else []
+        if not frame_files:
             return
-        src_img = QImage(frame_path)
-        if src_img.isNull():
+        frame_images = []
+        for ff in frame_files:
+            img = QImage(os.path.join(frames_dir, ff))
+            if not img.isNull():
+                frame_images.append(img)
+        if not frame_images:
             return
         preview_h = 500
         preview_w = 500
-        img_scale = min(preview_w / src_img.width(), preview_h / src_img.height())
+        img_scale = min(preview_w / frame_images[0].width(), preview_h / frame_images[0].height())
         bbox_center_x = (bx + bx2) / 2
 
         class GroundLineWidget(QWidget):
@@ -1623,8 +1669,10 @@ class PetWindow(QWidget):
                 self.center_x = bbox_center_x + widget_info["x_offset"]
                 self.dragging_h = False
                 self.dragging_v = False
+                self.frame_idx = 0
 
             def paintEvent(self, event):
+                src_img = frame_images[self.frame_idx]
                 p = QPainter(self)
                 p.fillRect(self.rect(), QColor(40, 40, 40))
                 p.setRenderHint(QPainter.SmoothPixmapTransform)
@@ -1658,8 +1706,8 @@ class PetWindow(QWidget):
 
             def mousePressEvent(self, event):
                 mx, my = event.position().x(), event.position().y()
-                iw = src_img.width() * img_scale
-                ih = src_img.height() * img_scale
+                iw = frame_images[0].width() * img_scale
+                ih = frame_images[0].height() * img_scale
                 ix = (preview_w - iw) / 2
                 iy = (preview_h - ih) / 2
                 gy = iy + self.ground_y * img_scale
@@ -1675,27 +1723,27 @@ class PetWindow(QWidget):
                         self.dragging_h = True
                     else:
                         self.dragging_v = True
-                self._update(mx, my)
+                self._update_pos(mx, my)
 
             def mouseMoveEvent(self, event):
                 if self.dragging_h or self.dragging_v:
-                    self._update(event.position().x(), event.position().y())
+                    self._update_pos(event.position().x(), event.position().y())
 
             def mouseReleaseEvent(self, event):
                 self.dragging_h = False
                 self.dragging_v = False
 
-            def _update(self, mouse_x, mouse_y):
-                iw = src_img.width() * img_scale
-                ih = src_img.height() * img_scale
+            def _update_pos(self, mouse_x, mouse_y):
+                iw = frame_images[0].width() * img_scale
+                ih = frame_images[0].height() * img_scale
                 ix = (preview_w - iw) / 2
                 iy = (preview_h - ih) / 2
                 if self.dragging_h:
                     raw = (mouse_y - iy) / img_scale
-                    self.ground_y = max(0, min(src_img.height() - 1, int(raw)))
+                    self.ground_y = max(0, min(frame_images[0].height() - 1, int(raw)))
                 if self.dragging_v:
                     raw = (mouse_x - ix) / img_scale
-                    self.center_x = max(0, min(src_img.width() - 1, raw))
+                    self.center_x = max(0, min(frame_images[0].width() - 1, raw))
                 self.update()
 
         dlg = QDialog(parent)
@@ -1704,11 +1752,58 @@ class PetWindow(QWidget):
         vl.addWidget(QLabel("红色横线=地面，红色竖线=中轴（绿线=原始bbox参考）"))
         gw = GroundLineWidget(dlg)
         vl.addWidget(gw)
+
+        total = len(frame_images)
+        ctl = QHBoxLayout()
+        play_btn = QPushButton("⏸")
+        play_btn.setFixedWidth(32)
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(0, total - 1)
+        frame_label = QLabel(f"0/{total}")
+        frame_label.setFixedWidth(70)
+        ctl.addWidget(play_btn)
+        ctl.addWidget(slider)
+        ctl.addWidget(frame_label)
+        vl.addLayout(ctl)
+
+        playing = [True]
+        timer = QTimer(dlg)
+        tick = max(10, int(round(1000 / self.fps)))
+        timer.setInterval(tick)
+
+        def on_tick():
+            idx = (gw.frame_idx + 1) % total
+            gw.frame_idx = idx
+            slider.setValue(idx)
+            frame_label.setText(f"{idx}/{total}")
+            gw.update()
+
+        def on_slider(val):
+            gw.frame_idx = val
+            frame_label.setText(f"{val}/{total}")
+            gw.update()
+
+        def toggle_play():
+            playing[0] = not playing[0]
+            if playing[0]:
+                play_btn.setText("⏸")
+                timer.start()
+            else:
+                play_btn.setText("▶")
+                timer.stop()
+
+        timer.timeout.connect(on_tick)
+        slider.valueChanged.connect(on_slider)
+        play_btn.clicked.connect(toggle_play)
+        timer.start()
+
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
         vl.addWidget(btns)
-        if dlg.exec() == QDialog.Accepted:
+        result = dlg.exec()
+        timer.stop()
+        if result == QDialog.Accepted:
             widget_info["y_offset"] = gw.ground_y - by2
             widget_info["x_offset"] = int(gw.center_x - bbox_center_x)
             widget_info["off_label"].setText(f"X:{widget_info['x_offset']} Y:{widget_info['y_offset']}")
@@ -1932,27 +2027,28 @@ class PetWindow(QWidget):
             if not self.isVisible():
                 self.show()
             return
-        user32 = ctypes.windll.user32
-        user32.GetForegroundWindow.restype = wintypes.HWND
-        user32.GetWindowRect.argtypes = [
-            wintypes.HWND,
-            ctypes.POINTER(wintypes.RECT),
-        ]
-        hwnd = user32.GetForegroundWindow()
-        if not hwnd or hwnd == int(self.winId()):
-            if not self.isVisible():
-                self.show()
-            return
-        rect = wintypes.RECT()
-        user32.GetWindowRect(hwnd, ctypes.byref(rect))
-        screen = QGuiApplication.primaryScreen().geometry()
-        full = (
-            rect.left <= screen.x()
-            and rect.top <= screen.y()
-            and rect.right >= screen.x() + screen.width()
-            and rect.bottom >= screen.y() + screen.height()
-        )
-        if full:
+        is_full = False
+        if IS_WINDOWS:
+            user32 = ctypes.windll.user32
+            user32.GetForegroundWindow.restype = wintypes.HWND
+            user32.GetWindowRect.argtypes = [
+                wintypes.HWND,
+                ctypes.POINTER(wintypes.RECT),
+            ]
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd or hwnd == int(self.winId()):
+                pass
+            else:
+                rect = wintypes.RECT()
+                user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                screen = QGuiApplication.primaryScreen().geometry()
+                is_full = (
+                    rect.left <= screen.x()
+                    and rect.top <= screen.y()
+                    and rect.right >= screen.x() + screen.width()
+                    and rect.bottom >= screen.y() + screen.height()
+                )
+        if is_full:
             self.hide()
         elif not self.isVisible():
             self.show()
@@ -2164,28 +2260,29 @@ def _toggle_transparent_all():
         pw.toggle_transparent()
 
 
-class HotkeyThread(QThread):
-    triggered = Signal()
+if IS_WINDOWS:
+    class HotkeyThread(QThread):
+        triggered = Signal()
 
-    def __init__(self):
-        super().__init__()
-        self._thread_id = None
+        def __init__(self):
+            super().__init__()
+            self._thread_id = None
 
-    def run(self):
-        self._thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
-        user32 = ctypes.windll.user32
-        user32.RegisterHotKey(None, HOTKEY_TRANSPARENT, MOD_CTRL_SHIFT, VK_T)
-        msg = wintypes.MSG()
-        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
-            if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_TRANSPARENT:
-                self.triggered.emit()
-        user32.UnregisterHotKey(None, HOTKEY_TRANSPARENT)
+        def run(self):
+            self._thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
+            user32 = ctypes.windll.user32
+            user32.RegisterHotKey(None, HOTKEY_TRANSPARENT, MOD_CTRL_SHIFT, VK_T)
+            msg = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+                if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_TRANSPARENT:
+                    self.triggered.emit()
+            user32.UnregisterHotKey(None, HOTKEY_TRANSPARENT)
 
-    def stop(self):
-        if self._thread_id:
-            ctypes.windll.user32.PostThreadMessageW(
-                self._thread_id, 0x0012, 0, 0  # WM_QUIT
-            )
+        def stop(self):
+            if self._thread_id:
+                ctypes.windll.user32.PostThreadMessageW(
+                    self._thread_id, 0x0012, 0, 0  # WM_QUIT
+                )
 
 
 def _quit_all():
@@ -2230,9 +2327,11 @@ def main():
 
     tray = setup_tray(active[0])
 
-    hotkey_thread = HotkeyThread()
-    hotkey_thread.triggered.connect(_toggle_transparent_all)
-    hotkey_thread.start()
+    hotkey_thread = None
+    if IS_WINDOWS:
+        hotkey_thread = HotkeyThread()
+        hotkey_thread.triggered.connect(_toggle_transparent_all)
+        hotkey_thread.start()
 
     for name in active:
         key = _next_instance_key(name)
@@ -2240,8 +2339,9 @@ def main():
         pet_windows.append(pw)
 
     result = app.exec()
-    hotkey_thread.stop()
-    hotkey_thread.wait(2000)
+    if hotkey_thread:
+        hotkey_thread.stop()
+        hotkey_thread.wait(2000)
     return result
 
 
