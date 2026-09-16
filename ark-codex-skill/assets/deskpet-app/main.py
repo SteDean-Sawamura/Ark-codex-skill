@@ -1,14 +1,9 @@
 import atexit
 import json
-import math
 import os
-import random
-import shutil
-import struct
-import subprocess
 import sys
+import random
 import time
-import wave
 
 IS_WINDOWS = sys.platform == 'win32'
 IS_MACOS = sys.platform == 'darwin'
@@ -20,277 +15,46 @@ if IS_WINDOWS:
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import (
-    QAction,
-    QColor,
-    QFont,
-    QFontMetrics,
-    QGuiApplication,
-    QIcon,
-    QImage,
-    QPainter,
+    QAction, QColor, QFont, QFontMetrics, QGuiApplication, QIcon, QImage, QPainter,
 )
 from PySide6.QtMultimedia import QSoundEffect
 from PySide6.QtWidgets import (
-    QApplication,
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QInputDialog,
-    QLabel,
-    QLineEdit,
-    QListWidget,
-    QListWidgetItem,
-    QMenu,
-    QMessageBox,
-    QProgressDialog,
-    QPushButton,
-    QScrollArea,
-    QSlider,
-    QSystemTrayIcon,
-    QTabWidget,
-    QVBoxLayout,
-    QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMenu, QMessageBox, QProgressDialog,
+    QPushButton, QScrollArea, QSlider, QSystemTrayIcon, QTabWidget,
+    QVBoxLayout, QWidget,
 )
 
-LOOP_STATES = {"idle", "move", "sit", "sleep"}
-STANDARD_ANIMS = {"idle", "sit", "sleep", "move", "interact"}
+from config import (
+    BASE_DIR, PETS_DIR, SOUNDS_DIR, ERROR_LOG, SETTINGS_PATH,
+    PID_FILE, SHUTDOWN_FLAG, DISABLED_FLAG, SHOW_FLAG, HIDE_FLAG,
+    WATCHER_PATH, PYW_PATH, PYTHON_PATH, SKILL_SCRIPTS, WEBM_DIR,
+    LOOP_STATES, STANDARD_ANIMS, PAD, STATUS_H, MIN_SCALE, MAX_SCALE,
+    PHYSICS_INTERVAL, WINDOW_SCAN_INTERVAL, REPULSION_QUANTITY, REPULSION_MAX_DIST,
+    SPEED_OPTIONS, SUBTITLE_LEVELS, DEFAULT_SETTINGS,
+    pet_windows, _next_instance_key, load_settings, save_settings,
+    list_pets, resolve_active_pets, remove_pid_file, remove_disabled_flag,
+)
+from manifest import load_manifest
+from sound import ensure_sounds
+from screen import get_world_areas, get_max_screen_bottom
+from bubble import DEFAULT_LINES, BubbleWidget
+from prts import fetch_prts_lines
+from fetch_worker import FetchWorker
+from dialogs import SettingsDialog
+from tray import setup_tray, load_sound_effects, _toggle_transparent_all
+
 import codex_monitor
 from behavior import MIN_DURATION, STATE_TO_ANIM, State, StochasticMatrix
 from physics import Plane
 import window_detect
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PETS_DIR = os.path.join(BASE_DIR, "pets")
-SOUNDS_DIR = os.path.join(BASE_DIR, "sounds")
-ERROR_LOG = os.path.join(BASE_DIR, "pet_error.log")
-SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")
-PID_FILE = os.path.join(BASE_DIR, "pet.pid")
-SHUTDOWN_FLAG = os.path.join(BASE_DIR, "pet_shutdown.flag")
-DISABLED_FLAG = os.path.join(BASE_DIR, "pet_disabled.flag")
-SHOW_FLAG = os.path.join(BASE_DIR, "pet_show.flag")
-HIDE_FLAG = os.path.join(BASE_DIR, "pet_hide.flag")
-WATCHER_PATH = os.path.join(BASE_DIR, "codex_pet_launcher.pyw")
-if IS_MACOS:
-    PYW_PATH = os.path.join(BASE_DIR, ".venv", "bin", "python")
-    PYTHON_PATH = PYW_PATH
-else:
-    PYW_PATH = os.path.join(BASE_DIR, ".venv", "Scripts", "pythonw.exe")
-    PYTHON_PATH = os.path.join(BASE_DIR, ".venv", "Scripts", "python.exe")
-SKILL_SCRIPTS = os.path.join(
-    os.path.expanduser("~"), ".claude", "skills", "ark-codex-skill", "scripts"
-)
-WEBM_DIR = os.path.join(BASE_DIR, "work", "webm")
-
-PAD = 12
-STATUS_H = 46
-MIN_SCALE = 0.3
-MAX_SCALE = 2.0
-PHYSICS_INTERVAL = 33
-WINDOW_SCAN_INTERVAL = 250
-REPULSION_QUANTITY = 500_000.0
-REPULSION_MAX_DIST = 200.0
-
-SPEED_OPTIONS = [
-    ("0.5x", 0.5),
-    ("0.75x", 0.75),
-    ("1.0x", 1.0),
-    ("1.25x", 1.25),
-    ("1.5x", 1.5),
-]
-
-SUBTITLE_LEVELS = {
-    "short": {
-        "label": "简短",
-        "task_limit": 14,
-        "show_model": False,
-        "show_progress": False,
-    },
-    "medium": {
-        "label": "标准",
-        "task_limit": 36,
-        "show_model": True,
-        "show_progress": False,
-    },
-    "long": {
-        "label": "详细",
-        "task_limit": 80,
-        "show_model": True,
-        "show_progress": True,
-    },
-}
-
-DEFAULT_SETTINGS = {
-    "speed": 1.0,
-    "subtitle_length": "medium",
-    "subtitle_size": 19,
-    "bar_length": 100,
-    "mini_mode": False,
-    "auto_hide_fullscreen": False,
-    "locked": True,
-    "scale": 1.0,
-    "pos_x": None,
-    "pos_y": None,
-    "pet": None,
-    "active_pets": [],
-    "pet_states": {},
-    "autostart_with_codex": False,
-    "behavior_ai_activation": 4,
-    "behavior_allow_sit": True,
-    "behavior_allow_sleep": True,
-    "behavior_allow_walk": True,
-    "physic_gravity": 800,
-    "behavior_walk_speed": 60.0,
-    "display_multi_monitors": True,
-    "behavior_do_peer_repulsion": True,
-    "sound_enabled": True,
-    "sound_volume": 50,
-    "render_outline": "dragging",
-    "render_outline_color": "#FFFF00",
-    "render_outline_width": 2,
-    "opacity_dim": 0.75,
-}
-
-pet_windows = []
 
 if IS_WINDOWS:
     WM_HOTKEY = 0x0312
     HOTKEY_TRANSPARENT = 1
     MOD_CTRL_SHIFT = 0x0002 | 0x0004  # CTRL + SHIFT
     VK_T = 0x54
-
-
-def _next_instance_key(pet_name):
-    existing = {pw.instance_key for pw in pet_windows}
-    if pet_name not in existing:
-        return pet_name
-    n = 2
-    while f"{pet_name}#{n}" in existing:
-        n += 1
-    return f"{pet_name}#{n}"
-
-
-def load_settings():
-    data = dict(DEFAULT_SETTINGS)
-    try:
-        with open(SETTINGS_PATH, encoding="utf-8") as f:
-            data.update(json.load(f))
-    except Exception:
-        pass
-    return data
-
-
-def save_settings(data):
-    tmp = SETTINGS_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, SETTINGS_PATH)
-
-
-def list_pets():
-    pets = []
-    if not os.path.isdir(PETS_DIR):
-        return pets
-    for name in sorted(os.listdir(PETS_DIR)):
-        if os.path.isfile(os.path.join(PETS_DIR, name, "manifest.json")):
-            pets.append(name)
-    return pets
-
-
-def _migrate_manifest(pet_name, data):
-    pet_dir = os.path.join(PETS_DIR, pet_name)
-    frames_dir = os.path.join(pet_dir, "frames")
-    group_dir = os.path.join(frames_dir, "基建")
-    if os.path.isdir(os.path.join(frames_dir, "idle")):
-        os.makedirs(group_dir, exist_ok=True)
-        for entry in os.listdir(frames_dir):
-            entry_path = os.path.join(frames_dir, entry)
-            if os.path.isdir(entry_path) and entry != "基建":
-                shutil.move(entry_path, os.path.join(group_dir, entry))
-    new_data = {
-        "fps": data.get("fps", 20),
-        "size": data.get("size", 1000),
-        "groups": {"基建": data["states"]},
-    }
-    with open(os.path.join(pet_dir, "manifest.json"), "w", encoding="utf-8") as f:
-        json.dump(new_data, f, ensure_ascii=False, indent=2)
-    return new_data
-
-
-def load_manifest(pet_name):
-    path = os.path.join(PETS_DIR, pet_name, "manifest.json")
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    if "groups" not in data and "states" in data:
-        data = _migrate_manifest(pet_name, data)
-    return data
-
-
-def resolve_active_pets(settings):
-    pets = list_pets()
-    active = settings.get("active_pets") or []
-    active = [p for p in active if p in pets]
-    if not active:
-        name = settings.get("pet")
-        if name in pets:
-            active = [name]
-        elif pets:
-            active = [pets[0]]
-    return active
-
-
-def get_world_areas(multi_monitors=True):
-    screens = QGuiApplication.screens()
-    if not multi_monitors:
-        screens = screens[:1]
-    areas = []
-    for scr in screens:
-        geo = scr.availableGeometry()
-        left = geo.x()
-        right = geo.x() + geo.width()
-        bottom_y = 0
-        top_y = geo.y() + geo.height()
-        areas.append((left, right, bottom_y, top_y))
-    return areas
-
-
-def get_max_screen_bottom():
-    bottom = 0
-    for scr in QGuiApplication.screens():
-        geo = scr.availableGeometry()
-        b = geo.y() + geo.height()
-        if b > bottom:
-            bottom = b
-    return bottom
-
-
-def _generate_wav(path, freq, duration, volume=0.5):
-    sample_rate = 22050
-    n_samples = int(sample_rate * duration)
-    with wave.open(path, "w") as f:
-        f.setnchannels(1)
-        f.setsampwidth(2)
-        f.setframerate(sample_rate)
-        for i in range(n_samples):
-            t = i / sample_rate
-            envelope = max(0.0, 1.0 - t / duration)
-            val = int(volume * envelope * 32767 * math.sin(2 * math.pi * freq * t))
-            f.writeframes(struct.pack("<h", max(-32768, min(32767, val))))
-
-
-def ensure_sounds():
-    os.makedirs(SOUNDS_DIR, exist_ok=True)
-    drop_path = os.path.join(SOUNDS_DIR, "drop.wav")
-    click_path = os.path.join(SOUNDS_DIR, "click.wav")
-    if not os.path.isfile(drop_path):
-        _generate_wav(drop_path, 80, 0.15, 0.6)
-    if not os.path.isfile(click_path):
-        _generate_wav(click_path, 800, 0.08, 0.4)
-    return drop_path, click_path
-
 
 if IS_WINDOWS:
     RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -361,366 +125,6 @@ elif IS_MACOS:
 else:
     def set_autostart(enabled):
         return False
-
-
-def remove_pid_file():
-    try:
-        os.remove(PID_FILE)
-    except OSError:
-        pass
-
-
-def remove_disabled_flag():
-    try:
-        os.remove(DISABLED_FLAG)
-    except OSError:
-        pass
-
-
-class FetchWorker(QThread):
-    progress = Signal(str)
-    finished = Signal(str, bool)
-
-    def __init__(self, operator, skin=None, group=None):
-        super().__init__()
-        self.operator = operator
-        self.skin = skin
-        self.group = group or "基建"
-        self.pet_name = f"{operator}-{skin}" if skin else operator
-
-    def run(self):
-        export_script = os.path.join(SKILL_SCRIPTS, "prts_export.py")
-        process_script = os.path.join(SKILL_SCRIPTS, "process_webm.py")
-        if not os.path.isfile(export_script):
-            self.finished.emit("skill 脚本未找到", False)
-            return
-        self.progress.emit(f"正在导出 {self.pet_name} ({self.group}) ...")
-        cmd = [PYTHON_PATH, export_script, self.operator, "--out", WEBM_DIR,
-               "--group", self.group]
-        if self.skin:
-            cmd += ["--skin", self.skin]
-        try:
-            subprocess.run(cmd, check=True, capture_output=True, timeout=300,
-                           creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0)
-        except Exception as e:
-            self.finished.emit(f"导出失败: {e}", False)
-            return
-        self.progress.emit(f"正在转换 {self.pet_name} 帧...")
-        filter_name = f"{self.operator}-{self.skin}" if self.skin else self.operator
-        pet_dir = os.path.join(PETS_DIR, self.pet_name)
-        cmd2 = [
-            PYTHON_PATH, process_script,
-            "--src", WEBM_DIR, "--name", filter_name, "--out", pet_dir,
-            "--group", self.group,
-        ]
-        try:
-            subprocess.run(cmd2, check=True, capture_output=True, timeout=300,
-                           creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0)
-        except Exception as e:
-            self.finished.emit(f"转换失败: {e}", False)
-            return
-        self.finished.emit(f"{self.pet_name} 已入库", True)
-
-
-class SettingsDialog(QDialog):
-    def __init__(self, settings, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Claude Code 桌宠设置")
-        self.setModal(True)
-        self.setMinimumWidth(380)
-
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
-
-        self.speed_combo = QComboBox()
-        for label, value in SPEED_OPTIONS:
-            self.speed_combo.addItem(label, value)
-        self.speed_combo.setCurrentIndex(
-            self._index_for_value(settings.get("speed", 1.0))
-        )
-
-        self.subtitle_combo = QComboBox()
-        for key, info in SUBTITLE_LEVELS.items():
-            self.subtitle_combo.addItem(info["label"], key)
-        self.subtitle_combo.setCurrentIndex(
-            self._index_for_key(settings.get("subtitle_length", "medium"))
-        )
-
-        self.autostart_check = QCheckBox(
-            "随 Claude Code 启动（登录后监听，检测到 Claude Code 再启动桌宠）"
-        )
-        self.autostart_check.setChecked(
-            bool(settings.get("autostart_with_codex", False))
-        )
-
-        self.mini_check = QCheckBox("迷你模式（隐藏字幕条）")
-        self.mini_check.setChecked(bool(settings.get("mini_mode", False)))
-        self.fullscreen_check = QCheckBox("全屏应用时自动隐藏")
-        self.fullscreen_check.setChecked(
-            bool(settings.get("auto_hide_fullscreen", False))
-        )
-
-        self.size_slider = QSlider(Qt.Horizontal)
-        self.size_slider.setRange(14, 26)
-        self.size_slider.setValue(int(settings.get("subtitle_size", 19)))
-        self.size_value = QLabel(f"{self.size_slider.value()}px")
-        self.size_slider.valueChanged.connect(
-            lambda value: self.size_value.setText(f"{value}px")
-        )
-        size_row = QWidget()
-        size_layout = QHBoxLayout(size_row)
-        size_layout.setContentsMargins(0, 0, 0, 0)
-        size_layout.addWidget(self.size_slider, 1)
-        size_layout.addWidget(self.size_value)
-
-        self.bar_slider = QSlider(Qt.Horizontal)
-        self.bar_slider.setRange(40, 100)
-        self.bar_slider.setValue(int(settings.get("bar_length", 100)))
-        self.bar_value = QLabel(f"{self.bar_slider.value()}%")
-        self.bar_slider.valueChanged.connect(
-            lambda value: self.bar_value.setText(f"{value}%")
-        )
-        bar_row = QWidget()
-        bar_layout = QHBoxLayout(bar_row)
-        bar_layout.setContentsMargins(0, 0, 0, 0)
-        bar_layout.addWidget(self.bar_slider, 1)
-        bar_layout.addWidget(self.bar_value)
-
-        self.activation_slider = QSlider(Qt.Horizontal)
-        self.activation_slider.setRange(0, 16)
-        self.activation_slider.setValue(
-            int(settings.get("behavior_ai_activation", 4))
-        )
-        self.activation_value = QLabel(str(self.activation_slider.value()))
-        self.activation_slider.valueChanged.connect(
-            lambda v: self.activation_value.setText(str(v))
-        )
-        act_row = QWidget()
-        act_layout = QHBoxLayout(act_row)
-        act_layout.setContentsMargins(0, 0, 0, 0)
-        act_layout.addWidget(self.activation_slider, 1)
-        act_layout.addWidget(self.activation_value)
-
-        self.walk_speed_slider = QSlider(Qt.Horizontal)
-        self.walk_speed_slider.setRange(20, 200)
-        self.walk_speed_slider.setValue(
-            int(settings.get("behavior_walk_speed", 60))
-        )
-        self.walk_speed_value = QLabel(str(self.walk_speed_slider.value()))
-        self.walk_speed_slider.valueChanged.connect(
-            lambda v: self.walk_speed_value.setText(str(v))
-        )
-        walk_row = QWidget()
-        walk_layout = QHBoxLayout(walk_row)
-        walk_layout.setContentsMargins(0, 0, 0, 0)
-        walk_layout.addWidget(self.walk_speed_slider, 1)
-        walk_layout.addWidget(self.walk_speed_value)
-
-        self.gravity_slider = QSlider(Qt.Horizontal)
-        self.gravity_slider.setRange(200, 2000)
-        self.gravity_slider.setSingleStep(100)
-        self.gravity_slider.setValue(
-            int(settings.get("physic_gravity", 800))
-        )
-        self.gravity_value = QLabel(str(self.gravity_slider.value()))
-        self.gravity_slider.valueChanged.connect(
-            lambda v: self.gravity_value.setText(str(v))
-        )
-        grav_row = QWidget()
-        grav_layout = QHBoxLayout(grav_row)
-        grav_layout.setContentsMargins(0, 0, 0, 0)
-        grav_layout.addWidget(self.gravity_slider, 1)
-        grav_layout.addWidget(self.gravity_value)
-
-        self.sound_check = QCheckBox("启用音效")
-        self.sound_check.setChecked(bool(settings.get("sound_enabled", True)))
-        self.volume_slider = QSlider(Qt.Horizontal)
-        self.volume_slider.setRange(0, 100)
-        self.volume_slider.setValue(int(settings.get("sound_volume", 50)))
-        self.volume_value = QLabel(f"{self.volume_slider.value()}%")
-        self.volume_slider.valueChanged.connect(
-            lambda v: self.volume_value.setText(f"{v}%")
-        )
-        vol_row = QWidget()
-        vol_layout = QHBoxLayout(vol_row)
-        vol_layout.setContentsMargins(0, 0, 0, 0)
-        vol_layout.addWidget(self.volume_slider, 1)
-        vol_layout.addWidget(self.volume_value)
-
-        self.allow_sit_check = QCheckBox("允许坐下")
-        self.allow_sit_check.setChecked(
-            bool(settings.get("behavior_allow_sit", True))
-        )
-        self.allow_sleep_check = QCheckBox("允许睡觉")
-        self.allow_sleep_check.setChecked(
-            bool(settings.get("behavior_allow_sleep", True))
-        )
-        self.allow_walk_check = QCheckBox("允许行走")
-        self.allow_walk_check.setChecked(
-            bool(settings.get("behavior_allow_walk", True))
-        )
-        self.repulsion_check = QCheckBox("宠物间互斥")
-        self.repulsion_check.setChecked(
-            bool(settings.get("behavior_do_peer_repulsion", True))
-        )
-        self.multi_mon_check = QCheckBox("多显示器支持")
-        self.multi_mon_check.setChecked(
-            bool(settings.get("display_multi_monitors", True))
-        )
-
-        form.addRow("动作倍速", self.speed_combo)
-        form.addRow("字幕长度", self.subtitle_combo)
-        form.addRow("字幕大小", size_row)
-        form.addRow("字条长度", bar_row)
-        form.addRow("行为活跃度", act_row)
-        form.addRow("行走速度", walk_row)
-        form.addRow("重力加速度", grav_row)
-        form.addRow("", self.sound_check)
-        form.addRow("音量", vol_row)
-        form.addRow("", self.allow_sit_check)
-        form.addRow("", self.allow_sleep_check)
-        form.addRow("", self.allow_walk_check)
-        form.addRow("", self.repulsion_check)
-        form.addRow("", self.multi_mon_check)
-        form.addRow("", self.mini_check)
-        form.addRow("", self.fullscreen_check)
-        form.addRow("", self.autostart_check)
-        self.doctor_name_edit = QLineEdit(settings.get("doctor_name", "博士"))
-        self.doctor_name_edit.setPlaceholderText("博士")
-        self.doctor_name_edit.setMaximumWidth(120)
-        form.addRow("博士名称", self.doctor_name_edit)
-        layout.addLayout(form)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    @staticmethod
-    def _index_for_value(value):
-        for i, (_, speed) in enumerate(SPEED_OPTIONS):
-            if abs(speed - float(value)) < 1e-6:
-                return i
-        return 2
-
-    @staticmethod
-    def _index_for_key(key):
-        keys = list(SUBTITLE_LEVELS.keys())
-        return keys.index(key) if key in keys else 1
-
-    def values(self):
-        return {
-            "speed": self.speed_combo.currentData(),
-            "subtitle_length": self.subtitle_combo.currentData(),
-            "subtitle_size": self.size_slider.value(),
-            "bar_length": self.bar_slider.value(),
-            "mini_mode": self.mini_check.isChecked(),
-            "auto_hide_fullscreen": self.fullscreen_check.isChecked(),
-            "autostart_with_codex": self.autostart_check.isChecked(),
-            "behavior_ai_activation": self.activation_slider.value(),
-            "behavior_allow_sit": self.allow_sit_check.isChecked(),
-            "behavior_allow_sleep": self.allow_sleep_check.isChecked(),
-            "behavior_allow_walk": self.allow_walk_check.isChecked(),
-            "behavior_walk_speed": self.walk_speed_slider.value(),
-            "physic_gravity": self.gravity_slider.value(),
-            "sound_enabled": self.sound_check.isChecked(),
-            "sound_volume": self.volume_slider.value(),
-            "behavior_do_peer_repulsion": self.repulsion_check.isChecked(),
-            "display_multi_monitors": self.multi_mon_check.isChecked(),
-            "doctor_name": self.doctor_name_edit.text().strip() or "博士",
-        }
-
-
-DEFAULT_LINES = [
-    "今天也要加油哦",
-    "……",
-    "有点困了",
-    "在看什么呢？",
-    "要休息一下吗",
-    "哼哼~",
-    "博士，工作辛苦了",
-    "别忘了喝水",
-]
-
-
-class BubbleWidget(QWidget):
-    def __init__(self, parent_pet):
-        super().__init__(None)
-        self.setWindowFlags(
-            Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-        )
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self._pet = parent_pet
-        self._text = ""
-        self._hide_timer = QTimer(self)
-        self._hide_timer.setSingleShot(True)
-        self._hide_timer.timeout.connect(self.hide)
-        self._font = QFont("Microsoft YaHei", 9)
-
-    def show_text(self, text, duration_ms=3500):
-        self._text = text
-        fm = QFontMetrics(self._font)
-        tw = fm.horizontalAdvance(text) + 24
-        self.setFixedSize(max(tw, 60), 40)
-        self._reposition()
-        self.show()
-        self.update()
-        self._hide_timer.start(duration_ms)
-
-    def _reposition(self):
-        pet = self._pet
-        cx = pet.x() + pet.width() // 2
-        self.move(cx - self.width() // 2, pet.y() - self.height() - 2)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height()
-        tri_h = 6
-        body = QRectF(0, 0, w, h - tri_h)
-        p.setBrush(QColor(30, 30, 30, 210))
-        p.setPen(Qt.NoPen)
-        p.drawRoundedRect(body, 8, 8)
-        tri = [
-            QPointF(w / 2 - 5, h - tri_h),
-            QPointF(w / 2 + 5, h - tri_h),
-            QPointF(w / 2, h),
-        ]
-        p.drawPolygon(tri)
-        p.setPen(QColor(255, 255, 255))
-        p.setFont(self._font)
-        p.drawText(body, Qt.AlignCenter, self._text)
-        p.end()
-
-
-def fetch_prts_lines(operator_name):
-    import re, urllib.request, urllib.parse
-    candidates = [operator_name]
-    if "-" in operator_name:
-        candidates.append(operator_name.split("-")[0])
-    for name in candidates:
-        page = urllib.parse.quote(f"{name}/语音记录")
-        url = f"https://prts.wiki/api.php?action=parse&page={page}&prop=wikitext&format=json"
-        try:
-            resp = urllib.request.urlopen(url, timeout=10)
-            data = json.loads(resp.read().decode("utf-8"))
-        except Exception:
-            continue
-        text = data.get("parse", {}).get("wikitext", {}).get("*", "")
-        if not text or "VoiceData" not in text:
-            continue
-        raw = re.findall(r"VoiceData/word\|中文\|(.*?)\}\}", text)
-        results = []
-        for line in raw:
-            clean = re.sub(r"\{\{DrName[^}]*\}\}", "{博士}", line)
-            clean = re.sub(r"\{\{DrName[^}]*$", "{博士}", clean)
-            clean = clean.strip()
-            if clean:
-                results.append(clean)
-        if results:
-            return results
-    return []
 
 
 class PetWindow(QWidget):
@@ -2217,49 +1621,6 @@ class PetWindow(QWidget):
         self.update()
 
 
-def setup_tray(first_pet):
-    base = os.path.join(PETS_DIR, first_pet, "frames")
-    icon_path = ""
-    for g in os.listdir(base) if os.path.isdir(base) else []:
-        p = os.path.join(base, g, "idle", "frame_0000.png")
-        if os.path.isfile(p):
-            icon_path = p
-            break
-    icon = QIcon(icon_path) if icon_path else QIcon()
-    tray = QSystemTrayIcon(icon)
-    tray_menu = QMenu()
-    tray_menu.addAction("显示桌宠", lambda: _show_all())
-    tray_menu.addAction("隐藏到托盘", lambda: _hide_all())
-    trans_action = QAction("透明穿透 (Ctrl+Shift+T)", checkable=True)
-    trans_action.triggered.connect(lambda: _toggle_transparent_all())
-    tray_menu.addAction(trans_action)
-    tray_menu.addSeparator()
-    tray_menu.addAction("完全退出", lambda: _quit_all())
-    tray.setContextMenu(tray_menu)
-    tray.activated.connect(lambda reason: _tray_activated(reason))
-    tray.setToolTip("Claude Code 桌宠")
-    tray.show()
-    return tray
-
-
-def _show_all():
-    for pw in pet_windows:
-        pw.tray_hidden = False
-        pw.show()
-        pw.raise_()
-
-
-def _hide_all():
-    for pw in pet_windows:
-        pw.tray_hidden = True
-        pw.hide()
-
-
-def _toggle_transparent_all():
-    for pw in pet_windows:
-        pw.toggle_transparent()
-
-
 if IS_WINDOWS:
     class HotkeyThread(QThread):
         triggered = Signal()
@@ -2283,31 +1644,6 @@ if IS_WINDOWS:
                 ctypes.windll.user32.PostThreadMessageW(
                     self._thread_id, 0x0012, 0, 0  # WM_QUIT
                 )
-
-
-def _quit_all():
-    if pet_windows:
-        pet_windows[0].quit_pet()
-
-
-def _tray_activated(reason):
-    if reason == QSystemTrayIcon.ActivationReason.Trigger:
-        if pet_windows and pet_windows[0].tray_hidden:
-            _show_all()
-        else:
-            _hide_all()
-
-
-def load_sound_effects():
-    drop_path, click_path = ensure_sounds()
-    effects = {}
-    drop_fx = QSoundEffect()
-    drop_fx.setSource(QUrl.fromLocalFile(os.path.abspath(drop_path)))
-    effects["drop"] = drop_fx
-    click_fx = QSoundEffect()
-    click_fx.setSource(QUrl.fromLocalFile(os.path.abspath(click_path)))
-    effects["click"] = click_fx
-    return effects
 
 
 def main():
